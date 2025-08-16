@@ -1,41 +1,116 @@
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::io;
 
-fn main() {
-    let host = cpal::default_host();
-    let device = host.default_input_device().unwrap();
-    let config = device.default_input_config().unwrap();
+mod audio;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::Stylize,
+    symbols::border,
+    text::{Line, Text},
+    widgets::{Block, Paragraph, Widget},
+    DefaultTerminal, Frame,
+};
 
-    let stream = device
-        .build_input_stream(
-            &config.into(),
-            |data: &[f32], _| {
-                process_audio(data);
-            },
-            |err| eprintln!("Error: {}", err),
-            None,
-        )
-        .unwrap();
-
-    stream.play().unwrap();
-    std::thread::sleep(std::time::Duration::from_secs(10));
+#[derive(Debug, Default)]
+pub struct App {
+    counter: u8,
+    exit: bool,
 }
 
-fn process_audio(data: &[f32]) {
-    if !data.is_empty() {
-        let avg_amplitude = data.iter().map(|&x| x.abs()).sum::<f32>() / data.len() as f32;
-        let max_amplitude = data.iter().map(|&x| x.abs()).fold(0.0, f32::max);
+impl App {
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        while !self.exit {
+            terminal.draw(|frame| self.draw(frame))?;
+            self.handle_events()?;
+        }
 
-        let zero_crossings = data
-            .windows(2)
-            .filter(|pair| pair[0] * pair[1] < 0.0)
-            .count();
-
-        println!(
-            "Audio data - Samples: {}, Avg: {:.4}, Max: {:.4}, Zero Crossings: {}",
-            data.len(),
-            avg_amplitude,
-            max_amplitude,
-            zero_crossings
-        );
+        Ok(())
     }
+
+    fn draw(&self, frame: &mut Frame) {
+        frame.render_widget(self, frame.area());
+    }
+
+    fn exit(&mut self) {
+        self.exit = true;
+    }
+
+    fn increment_counter(&mut self) {
+        self.counter += 1;
+    }
+
+    fn decrement_counter(&mut self) {
+        self.counter -= 1;
+    }
+
+    fn handle_key_event(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Char('q') => self.exit(),
+            KeyCode::Left => self.decrement_counter(),
+            KeyCode::Right => self.increment_counter(),
+            _ => {}
+        }
+    }
+
+    fn handle_events(&mut self) -> io::Result<()> {
+        match event::read()? {
+            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                self.handle_key_event(key_event)
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+}
+
+impl Widget for &App {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let instructions = Line::from(vec![
+            " Stop ".into(),
+            "<Space>".blue().bold(),
+            " Cancel ".into(),
+            "<C-c>".blue().bold(),
+            " Quit ".into(),
+            "<q> ".blue().bold(),
+        ]);
+
+        let block = Block::bordered()
+            .title_bottom(Line::from(" Recording...").left_aligned())
+            .title_bottom(instructions.right_aligned())
+            .border_set(border::ROUNDED);
+
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let center_y = inner.y + inner.height / 2;
+        let center_x = inner.x + inner.width / 2;
+
+        let max_bar_height = (inner.height / 2).saturating_sub(1);
+        let bar_height = (self.counter as u16 * max_bar_height) / 10;
+
+        for i in 0..bar_height {
+            if center_y >= inner.y + i + 1 {
+                buf[(center_x, center_y - i - 1)].set_char('█');
+            }
+            if center_y + i + 1 < inner.y + inner.height {
+                buf[(center_x, center_y + i + 1)].set_char('█');
+            }
+        }
+
+        buf[(center_x, center_y)].set_char('─');
+        let counter_text = Text::from(vec![Line::from(vec![
+            "Value: ".into(),
+            self.counter.to_string().yellow(),
+        ])]);
+
+        Paragraph::new(counter_text).render(Rect::new(inner.x + 1, inner.y, 20, 1), buf);
+    }
+}
+
+fn main() -> io::Result<()> {
+    let mut terminal = ratatui::init();
+    let result = App::default().run(&mut terminal);
+    ratatui::restore();
+    result
 }
