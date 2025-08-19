@@ -123,8 +123,20 @@ impl App {
 
                 let chunk = &samples[start..end];
                 let rms = (chunk.iter().map(|&x| x * x).sum::<f32>() / chunk.len() as f32).sqrt();
+                let target_value = (rms * 10.0).min(1.0);
 
-                *bar_value = (rms * 10.0).min(1.0);
+                // Asymmetric smoothing: fast rise, slow decay
+                if target_value > *bar_value {
+                    // Rising: respond quickly to peaks (low smoothing)
+                    let rise_smoothing = 0.1;
+                    *bar_value =
+                        *bar_value * rise_smoothing + target_value * (1.0 - rise_smoothing);
+                } else {
+                    // Falling: decay slowly for smooth animation (high smoothing)
+                    let decay_smoothing = 0.65;
+                    *bar_value =
+                        *bar_value * decay_smoothing + target_value * (1.0 - decay_smoothing);
+                }
             }
         }
     }
@@ -193,7 +205,7 @@ impl Widget for &App {
 
             let bar_height = (value * max_bar_height as f32) as u16;
 
-            let brightness = (value * 255.0) as u8;
+            let brightness = ((value + 0.1) * 255.0) as u8;
             let bar_color = ratatui::style::Color::Rgb(brightness, brightness, brightness);
 
             for j in 0..bar_height {
