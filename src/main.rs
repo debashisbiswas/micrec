@@ -19,15 +19,17 @@ pub struct App {
     exit: bool,
     recording: bool,
     shutdown_tx: Option<Sender<()>>,
+    last_terminal_width: u16,
 }
 
 impl Default for App {
     fn default() -> Self {
         Self {
-            bar_values: Arc::new(Mutex::new(vec![0.0; 100])),
+            bar_values: Arc::new(Mutex::new(vec![0.0; 50])), // Start with fewer bars
             exit: false,
             recording: true,
             shutdown_tx: None,
+            last_terminal_width: 0,
         }
     }
 }
@@ -63,8 +65,25 @@ impl App {
         Ok(())
     }
 
-    fn draw(&self, frame: &mut Frame) {
-        frame.render_widget(self, frame.area());
+    fn draw(&mut self, frame: &mut Frame) {
+        // Check if terminal width changed and update bar count
+        let current_width = frame.area().width;
+        if current_width != self.last_terminal_width {
+            self.update_bar_count(current_width);
+            self.last_terminal_width = current_width;
+        }
+        frame.render_widget(&*self, frame.area());
+    }
+
+    fn update_bar_count(&mut self, terminal_width: u16) {
+        // Calculate optimal bar count based on terminal width
+        // Account for border and spacing: 2 chars per bar (bar + gap), minus some padding
+        let usable_width = terminal_width.saturating_sub(4); // Account for borders
+        let optimal_bar_count = (usable_width / 2).max(10) as usize; // Minimum 10 bars
+
+        if let Ok(mut bars) = self.bar_values.lock() {
+            bars.resize(optimal_bar_count, 0.0);
+        }
     }
 
     fn exit(&mut self) {
@@ -115,6 +134,9 @@ impl App {
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                 self.handle_key_event(key_event)
             }
+            Event::Resize(_, _) => {
+                // Terminal resize will be handled in the next draw call
+            }
             _ => {}
         };
         Ok(())
@@ -145,15 +167,30 @@ impl Widget for &App {
 
         let bar_values = self.bar_values.lock().unwrap();
 
-        let center_x = inner.x + inner.width / 2;
         let center_y = inner.y + inner.height / 2;
         let max_bar_height = (inner.height / 2).saturating_sub(3);
 
-        let left = center_x - (bar_values.len() as u16 / 2);
+        let available_width = inner.width;
+        let bar_spacing = 2; // 1 char for bar + 1 char gap
+        let num_bars = bar_values.len() as u16;
+
+        if num_bars == 0 || available_width < bar_spacing {
+            return; // No bars to render or terminal too small
+        }
+
+        // Calculate starting position to center all bars
+        // Note: we don't need the gap after the last bar, so subtract 1 from total width
+        let total_width = (num_bars * bar_spacing).saturating_sub(1);
+        let start_x = inner.x + (available_width.saturating_sub(total_width)) / 2;
 
         for (i, &value) in bar_values.iter().enumerate() {
-            // TODO: I do like having a gap of one between each bar, but need to iron out the math
-            let bar_x = 2 * (i as u16);
+            let bar_x = start_x + (i as u16 * bar_spacing);
+
+            // Ensure bar is within bounds
+            if bar_x >= inner.x + inner.width {
+                break;
+            }
+
             let bar_height = (value * max_bar_height as f32) as u16;
 
             let brightness = (value * 255.0) as u8;
@@ -172,7 +209,6 @@ impl Widget for &App {
                 }
             }
 
-            // TODO I don't love the look of the middle yet.
             buf[(bar_x, center_y)]
                 .set_char('█')
                 .set_fg(ratatui::style::Color::Rgb(50, 50, 50));
